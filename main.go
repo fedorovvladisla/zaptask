@@ -2,92 +2,119 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/gorilla/mux"
+	"regexp"
 )
 
-// Структура для ответа от Kodaktor.ru
-type KodaktorUser struct {
+type KodaktorResponse struct {
 	Data struct {
 		Login string `json:"login"`
 	} `json:"data"`
 }
 
+type Response struct {
+	Data interface{} `json:"data"`
+}
+
 func main() {
-	r := mux.NewRouter()
-
-	// Маршрут /login - возвращает ваш логин в MOODLE
-	r.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		response := struct {
-			Login string `json:"login"`
-		}{
-			Login: "fedorovvlad", // Замените на ваш логин
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}).Methods("GET")
-
-	// Маршрут /id/{N} - получает логин пользователя с Kodaktor.ru
-	r.HandleFunc("/id/{N:[0-9]+}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		vars := mux.Vars(r)
-		n := vars["N"]
-
-		// Создаем запрос без Content-Type
-		req, err := http.NewRequest("GET", "https://nd.kodaktor.ru/users/"+n, nil)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		req.Header.Del("Content-Type")
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		var user KodaktorUser
-		if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		response := struct {
-			Login string `json:"login"`
-		}{
-			Login: user.Data.Login,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}).Methods("GET")
+	http.HandleFunc("/login", loginHandler)
+	http.HandleFunc("/id/", idHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5000"
 	}
 
-	log.Printf("Сервер запущен на порту %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	log.Printf("Server started on port %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	response := Response{
+		Data: struct {
+			Login string `json:"login"`
+		}{
+			Login: "fedorovvlad", // Ваш логин
+		},
+	}
+
+	sendJSON(w, response)
+}
+
+func idHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	re := regexp.MustCompile(`^/id/(\d+)/?$`)
+	matches := re.FindStringSubmatch(r.URL.Path)
+	if len(matches) < 2 {
+		sendError(w, "Invalid ID format", http.StatusBadRequest)
+		return
+	}
+	n := matches[1]
+
+	req, err := http.NewRequest("GET", "https://nd.kodaktor.ru/users/"+n, nil)
+	if err != nil {
+		sendError(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Del("Content-Type")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		sendError(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		sendError(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		sendError(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	var kodaktorResp KodaktorResponse
+	if err := json.Unmarshal(body, &kodaktorResp); err != nil {
+		sendError(w, "Invalid response format", http.StatusInternalServerError)
+		return
+	}
+
+	response := Response{
+		Data: struct {
+			Login string `json:"login"`
+		}{
+			Login: kodaktorResp.Data.Login,
+		},
+	}
+
+	sendJSON(w, response)
+}
+
+func sendJSON(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func sendError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": message,
+	})
 }
