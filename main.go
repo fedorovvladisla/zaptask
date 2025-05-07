@@ -2,58 +2,87 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/gorilla/mux"
+	"regexp"
 )
 
-type Response struct {
+type UserResponse struct {
 	Login string `json:"login"`
 }
 
 func main() {
-	router := mux.NewRouter()
+	http.HandleFunc("/login", loginHandler)
+	http.HandleFunc("/id/", idHandler)
 
-	router.HandleFunc("/login", loginHandler)
-
-	router.HandleFunc("/id/{N}", nHandler)
-
-	port := "5000"
-	if p := os.Getenv("PORT"); p != "" {
-		port = p
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "5000"
 	}
 
-	log.Printf("Сервер запущен на порту %s", port)
-
-	err := http.ListenAndServe(":"+port, router)
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Printf("Server started on port %s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("fedorovvlad"))
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte("fedorovvlad")) // Замените на ваш логин
 }
 
-func nHandler(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	n := vars["N"]
-	res, err := http.Get("https://nd.kodaktor.ru/users/" + n)
+func idHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Извлекаем N из пути /id/{N}
+	re := regexp.MustCompile(`^/id/(\d+)/?$`)
+	matches := re.FindStringSubmatch(r.URL.Path)
+	if len(matches) < 2 {
+		http.Error(w, "Invalid ID format", http.StatusBadRequest)
+		return
+	}
+	n := matches[1]
+
+	// Создаем запрос без Content-Type
+	req, err := http.NewRequest("GET", "https://nd.kodaktor.ru/users/"+n, nil)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		w.WriteHeader(http.StatusBadRequest)
+	req.Header.Del("Content-Type")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
-	var resp Response
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
-	w.Write([]byte(resp.Login))
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	var user UserResponse
+	if err := json.Unmarshal(body, &user); err != nil {
+		http.Error(w, "Invalid response format", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(user.Login))
 }
