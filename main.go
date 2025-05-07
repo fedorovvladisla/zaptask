@@ -9,8 +9,14 @@ import (
 	"regexp"
 )
 
-type UserResponse struct {
-	Login string `json:"login"`
+type KodaktorResponse struct {
+	Data struct {
+		Login string `json:"login"`
+	} `json:"data"`
+}
+
+type Response struct {
+	Data interface{} `json:"data"`
 }
 
 func main() {
@@ -28,32 +34,38 @@ func main() {
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("fedorovvlad")) // Замените на ваш логин
+
+	response := Response{
+		Data: struct {
+			Login string `json:"login"`
+		}{
+			Login: "fedorovvlad", // Ваш логин
+		},
+	}
+
+	sendJSON(w, response)
 }
 
 func idHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Извлекаем N из пути /id/{N}
 	re := regexp.MustCompile(`^/id/(\d+)/?$`)
 	matches := re.FindStringSubmatch(r.URL.Path)
 	if len(matches) < 2 {
-		http.Error(w, "Invalid ID format", http.StatusBadRequest)
+		sendError(w, "Invalid ID format", http.StatusBadRequest)
 		return
 	}
 	n := matches[1]
 
-	// Создаем запрос без Content-Type
 	req, err := http.NewRequest("GET", "https://nd.kodaktor.ru/users/"+n, nil)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		sendError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	req.Header.Del("Content-Type")
@@ -61,28 +73,48 @@ func idHandler(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		sendError(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		http.Error(w, "User not found", http.StatusNotFound)
+		sendError(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		sendError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	var user UserResponse
-	if err := json.Unmarshal(body, &user); err != nil {
-		http.Error(w, "Invalid response format", http.StatusInternalServerError)
+	var kodaktorResp KodaktorResponse
+	if err := json.Unmarshal(body, &kodaktorResp); err != nil {
+		sendError(w, "Invalid response format", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(user.Login))
+	response := Response{
+		Data: struct {
+			Login string `json:"login"`
+		}{
+			Login: kodaktorResp.Data.Login,
+		},
+	}
+
+	sendJSON(w, response)
+}
+
+func sendJSON(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func sendError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": message,
+	})
 }
